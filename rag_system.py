@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 from dotenv import load_dotenv
 from groq import Groq
 
@@ -10,7 +11,6 @@ from groq import Groq
 
 TOP_K = 8
 
-# Current Groq model used for text generation
 GROQ_MODEL = "openai/gpt-oss-20b"
 
 
@@ -38,46 +38,88 @@ client = Groq(
 
 
 # ============================================================
-# RETRIEVE RELEVANT DOCUMENTS
+# COSINE SIMILARITY
+# ============================================================
+
+def cosine_similarity(query_vector, document_vectors):
+    """
+    Calculate cosine similarity between one query vector
+    and all document vectors.
+    """
+
+    query_norm = np.linalg.norm(query_vector)
+
+    document_norms = np.linalg.norm(
+        document_vectors,
+        axis=1
+    )
+
+    # Prevent division by zero
+    query_norm = max(query_norm, 1e-12)
+
+    document_norms = np.maximum(
+        document_norms,
+        1e-12
+    )
+
+    similarities = (
+        document_vectors @ query_vector
+    ) / (
+        document_norms * query_norm
+    )
+
+    return similarities
+
+
+# ============================================================
+# RETRIEVE DOCUMENTS
 # ============================================================
 
 def retrieve_documents(
     question,
-    index,
+    embedding_matrix,
     metadata,
     embedding_model,
     top_k=TOP_K
 ):
     """
-    Convert the question into an embedding and retrieve
-    the most relevant chunks from the uploaded documents.
+    Retrieve the most relevant chunks using NumPy
+    cosine similarity.
     """
 
     question_embedding = embedding_model.encode(
         [question],
         convert_to_numpy=True
+    )[0]
+
+    similarities = cosine_similarity(
+        question_embedding,
+        embedding_matrix
     )
 
-    distances, indices = index.search(
-        question_embedding,
-        top_k
+    top_k = min(
+        top_k,
+        len(similarities)
     )
+
+    top_indices = np.argsort(
+        similarities
+    )[-top_k:][::-1]
 
     retrieved_documents = []
 
-    for distance, idx in zip(
-        distances[0],
-        indices[0]
-    ):
+    for idx in top_indices:
 
-        if idx < 0:
-            continue
+        document = metadata[int(idx)].copy()
 
-        document = metadata[idx].copy()
+        # Store similarity instead of FAISS distance
+        document["similarity"] = float(
+            similarities[idx]
+        )
 
-        document["distance"] = float(distance)
-
-        retrieved_documents.append(document)
+        retrieved_documents.append(
+            document
+        )
 
     return retrieved_documents
 
@@ -87,9 +129,6 @@ def retrieve_documents(
 # ============================================================
 
 def create_context(documents):
-    """
-    Combine retrieved chunks into a context string.
-    """
 
     context_parts = []
 
@@ -113,7 +152,7 @@ Content:
 
 
 # ============================================================
-# GENERATE ANSWER USING GROQ
+# GENERATE GROUNDED ANSWER
 # ============================================================
 
 def generate_answer(
@@ -121,21 +160,17 @@ def generate_answer(
     documents,
     conversation_history=None
 ):
-    """
-    Generate a grounded educational answer using
-    ONLY the retrieved document context.
-
-    conversation_history is optional and is used only
-    to understand follow-up questions.
-    """
 
     if not documents:
+
         return (
-            "I could not find relevant information "
+            "I could not find this information "
             "in the uploaded document(s)."
         )
 
-    context = create_context(documents)
+    context = create_context(
+        documents
+    )
 
     system_prompt = """
 You are a Medical Information RAG Assistant.
@@ -146,20 +181,23 @@ retrieved content from the uploaded document(s).
 
 IMPORTANT RULES:
 
-1. Use ONLY the supplied document context as evidence.
+1. Use ONLY the supplied document context.
 2. Do NOT use outside medical knowledge as evidence.
 3. Do NOT invent or guess facts.
-4. If the retrieved context does not support the answer,
+4. If the answer is not supported by the context,
    say exactly:
-   "I could not find this information in the uploaded document(s)."
+
+   "I could not find this information in the
+   uploaded document(s)."
+
 5. Do NOT diagnose the user.
 6. Do NOT provide personalized treatment.
 7. Do NOT provide medication dosage or prescriptions.
-8. Keep the answer clear and easy to understand.
-9. At the end, mention the relevant document name(s)
-   and page number(s).
-10. Previous conversation is only for understanding the
-    user's wording or follow-up question. It is NOT evidence.
+8. Keep answers clear and easy to understand.
+9. Mention relevant document names and page numbers
+   when supported by the context.
+10. Conversation history is only for understanding
+    follow-up wording. It is NOT evidence.
 """
 
     messages = [
@@ -169,8 +207,6 @@ IMPORTANT RULES:
         }
     ]
 
-    # Add previous conversation only for conversational continuity.
-    # It is explicitly NOT treated as evidence.
     if conversation_history:
 
         for message in conversation_history:
@@ -189,18 +225,18 @@ IMPORTANT RULES:
 
     user_prompt = f"""
 RETRIEVED DOCUMENT CONTEXT
-===========================
+==========================
 
 {context}
 
-===========================
+==========================
 CURRENT USER QUESTION
-===========================
+==========================
 
 {question}
 
-Answer the current question using ONLY the retrieved
-document context above.
+Answer the current question using ONLY the
+retrieved document context above.
 """
 
     messages.append(
@@ -219,6 +255,7 @@ document context above.
     answer = response.choices[0].message.content
 
     if not answer:
+
         return (
             "I could not generate an answer from "
             "the uploaded document(s)."
@@ -233,30 +270,15 @@ document context above.
 
 def ask_question(
     question,
-    index,
+    embedding_matrix,
     metadata,
     embedding_model,
     conversation_history=None
 ):
-    """
-    Complete RAG pipeline:
-
-    Question
-        ↓
-    Query embedding
-        ↓
-    FAISS retrieval
-        ↓
-    Relevant chunks
-        ↓
-    Groq
-        ↓
-    Grounded answer
-    """
 
     documents = retrieve_documents(
         question,
-        index,
+        embedding_matrix,
         metadata,
         embedding_model,
         TOP_K

@@ -1,6 +1,6 @@
 streamlit
 langchain-text-splitters
-faiss-cpu
+numpy
 pypdf
 sentence-transformers
 groq

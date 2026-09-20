@@ -1,8 +1,7 @@
+import re
 from io import BytesIO
 
-import faiss
 import numpy as np
-import re
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
@@ -104,11 +103,11 @@ def create_chunks(pages):
 
 def create_vectorstore(uploaded_files):
     """
-    Process uploaded PDF files and create an
-    in-memory FAISS vector index.
+    Process uploaded PDFs and create an in-memory
+    NumPy embedding matrix.
 
     Returns:
-        index
+        embeddings
         metadata
         embedding_model
     """
@@ -157,16 +156,8 @@ def create_vectorstore(uploaded_files):
         dtype="float32"
     )
 
-    dimension = embeddings.shape[1]
-
-    index = faiss.IndexFlatL2(
-        dimension
-    )
-
-    index.add(embeddings)
-
     return (
-        index,
+        embeddings,
         all_chunks,
         embedding_model
     )
